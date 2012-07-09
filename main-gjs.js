@@ -28,12 +28,12 @@
 */
 
 
-
-
 const IBus = imports.gi.IBus;
 imports.searchPath.unshift('.');
 const eevars = imports.evars;
 const suggestion = imports.suggestionbuilder;
+const Gio = imports.gi.Gio;
+const prefwindow = imports.pref;
 
 //check if running from ibus
 exec_by_ibus = (ARGV[0] == '--ibus')
@@ -79,15 +79,28 @@ if (bus.is_connected()) {
             }
 
             // process letter key events
-            if (keyval >= 33 && keyval <= 126) {
+            if ((keyval >= 33 && keyval <= 126) ||
+                (keyval >= IBus.KP_0 && keyval <= IBus.KP_9) ||
+                 keyval == IBus.KP_Add ||
+                 keyval == IBus.KP_Decimal ||
+                 keyval == IBus.KP_Divide ||
+                 keyval == IBus.KP_Multiply ||
+                 keyval == IBus.KP_Divide ||
+                 keyval == IBus.KP_Subtract) {
                 
                 engine.buffertext += IBus.keyval_to_unicode(keyval);
                 updateCurrentSuggestions(engine);
                 return true;
                 
             } else if (keyval == IBus.Return || keyval == IBus.space || keyval == IBus.Tab) {
-
-                commitCandidate(engine);
+                if (engine.buffertext.length > 0){
+                    if ((keyval == IBus.Return) && engine.setting_switch_newline && engine.setting_switch_preview && (engine.buffertext.length > 0)){
+                        commitCandidate(engine);
+                        return true;
+                    } else {
+                        commitCandidate(engine);
+                    }
+                }
 
             } else if (keyval == IBus.BackSpace) {
                 if (engine.buffertext.length > 0) {
@@ -99,9 +112,25 @@ if (bus.is_connected()) {
                     }
                     return true;
                 } 
+            } else if (keyval == IBus.Left || keyval == IBus.KP_Left || keyval == IBus.Right || keyval == IBus.KP_Right) {
+                if (engine.currentSuggestions.length <= 0 || engine.lookuptable.get_orientation() == 1){                    
+                    commitCandidate(engine);
+                } else {
+                    if (keyval == IBus.Left || keyval == IBus.KP_Left) {
+                        decSelection(engine);
+                    }
+                    else if (keyval == IBus.Right || keyval == IBus.KP_Right) {
+                        incSelection(engine);
+                    }
+                    
+                    return true;
+                }
                 
-            } else if (keyval == IBus.Up || keyval == IBus.Down) {
-                if (engine.currentSuggestions.length > 1){                    
+            } else if (keyval == IBus.Up || keyval == IBus.KP_Up || keyval == IBus.Down || keyval == IBus.KP_Down) {
+                print (engine.lookuptable.get_orientation());
+                if (engine.currentSuggestions.length <= 0 || engine.lookuptable.get_orientation() == 0){                    
+                    commitCandidate(engine);
+                } else {
                     if (keyval == IBus.Up) {
                         decSelection(engine);
                     }
@@ -110,24 +139,30 @@ if (bus.is_connected()) {
                     }
                     
                     return true;
-                } else {
-                    commitCandidate(engine);
                 }
            
-            } else if (keyval == IBus.Left || 
-                       keyval == IBus.Right || 
-                       keyval == IBus.Control_L || 
+            } else if (keyval == IBus.Control_L || 
                        keyval == IBus.Control_R || 
                        keyval == IBus.Insert || 
+                       keyval == IBus.KP_Insert || 
                        keyval == IBus.Delete || 
+                       keyval == IBus.KP_Delete || 
                        keyval == IBus.Home || 
+                       keyval == IBus.KP_Home || 
                        keyval == IBus.Page_Up || 
+                       keyval == IBus.KP_Page_Up || 
                        keyval == IBus.Page_Down || 
+                       keyval == IBus.KP_Page_Down || 
                        keyval == IBus.End || 
+                       keyval == IBus.KP_End || 
                        keyval == IBus.Alt_L || 
                        keyval == IBus.Alt_R || 
                        keyval == IBus.Super_L || 
-                       keyval == IBus.Super_R) {
+                       keyval == IBus.Super_R || 
+                       keyval == IBus.Return || 
+                       keyval == IBus.space || 
+                       keyval == IBus.Tab || 
+                       keyval == IBus.KP_Enter) {
                     
                     commitCandidate(engine);
             }
@@ -172,8 +207,9 @@ if (bus.is_connected()) {
         );
 
         proplist.append(propp);        
-        engine.lookuptable = IBus.LookupTable.new(16, 0, true, true);
+        engine.lookuptable = IBus.LookupTable.new(16, 0, true, true);        
         resetAll(engine);
+        initSetting(engine);
         return engine;
     }        
 
@@ -184,6 +220,39 @@ if (bus.is_connected()) {
     /* =========================================================================== */
     
     var suggestionBuilder = new suggestion.SuggestionBuilder();
+    
+    function initSetting(engine){
+        engine.setting = Gio.Settings.new("com.omicronlab.avro");
+    
+        //set up a asynchronous callback for instant change later
+        engine.setting.connect('changed', 
+            function(){
+                readSetting(engine);
+        });
+    
+        //read manually first time
+        readSetting(engine);
+    }
+    
+    
+    function readSetting(engine){
+        engine.setting_switch_preview = engine.setting.get_boolean('switch-preview');
+        engine.setting_switch_dict = engine.setting.get_boolean('switch-dict');
+        engine.setting_switch_newline = engine.setting.get_boolean('switch-newline');
+        engine.lookuptable.set_orientation(engine.setting.get_int('cboxorient'));
+        engine.setting_lutable_size = engine.setting.get_int('lutable-size');
+        engine.lookuptable.set_page_size(engine.setting_lutable_size);
+        
+        if (!engine.setting_switch_preview){
+            engine.setting_switch_dict = false;
+            engine.setting_switch_newline = false;
+        }
+        
+        var dictPref =  suggestionBuilder.getPref();
+        dictPref.dictEnable = engine.setting_switch_dict;
+        suggestionBuilder.setPref(dictPref);
+    }
+    
     
     function resetAll(engine){
         engine.currentSuggestions = [];
@@ -199,7 +268,7 @@ if (bus.is_connected()) {
     
     function updateCurrentSuggestions(engine){
         var suggestion = suggestionBuilder.suggest(engine.buffertext);
-        engine.currentSuggestions = suggestion['words'].slice(0);
+        engine.currentSuggestions = suggestion['words'].slice(0, engine.setting_lutable_size);
         engine.currentSelection = suggestion['prevSelection'];
         
         fillLookupTable (engine);
@@ -207,22 +276,35 @@ if (bus.is_connected()) {
     
     
     function fillLookupTable (engine){
-        var auxiliaryText = IBus.Text.new_from_string(engine.buffertext);
-        engine.update_auxiliary_text(auxiliaryText, true);
-        engine.lookuptable.clear();
         
-        engine.currentSuggestions.forEach(function(word){
-            let wtext = IBus.Text.new_from_string(word);
-            engine.lookuptable.append_candidate(wtext);
-        });
+        if (engine.setting_switch_preview){
+            var auxiliaryText = IBus.Text.new_from_string(engine.buffertext);
+            engine.update_auxiliary_text(auxiliaryText, true);
+            
+            if (engine.setting_switch_dict){
+                engine.lookuptable.clear();
+
+                engine.currentSuggestions.forEach(function(word){
+                    let wtext = IBus.Text.new_from_string(word);
+                    //default, ibus sets "1,2,3,4...." as label, i didn't find how to hide it,but a empty string can partially hide it
+                    let wlabel = IBus.Text.new_from_string('');;
+                    engine.lookuptable.append_candidate(wtext);
+                    engine.lookuptable.append_label(wlabel);
+                });   
+            }
+        }
         
         preeditCandidate(engine);
     }
     
     
     function preeditCandidate(engine){
-        engine.lookuptable.set_cursor_pos(engine.currentSelection);
-        engine.update_lookup_table_fast(engine.lookuptable,true);
+        if (engine.setting_switch_preview){
+            if (engine.setting_switch_dict){
+                engine.lookuptable.set_cursor_pos(engine.currentSelection);
+                engine.update_lookup_table_fast(engine.lookuptable,true);
+            }
+        }
         
         var preeditText = IBus.Text.new_from_string(engine.currentSuggestions[engine.currentSelection]);
         engine.update_preedit_text(preeditText, engine.currentSuggestions[engine.currentSelection].length, true);
@@ -233,6 +315,8 @@ if (bus.is_connected()) {
             var commitText = IBus.Text.new_from_string(engine.currentSuggestions[engine.currentSelection]);
             engine.commit_text(commitText);
         }
+        
+        suggestionBuilder.stringCommitted(engine.buffertext, engine.currentSuggestions[engine.currentSelection]);
         
         resetAll(engine);
     }
@@ -260,8 +344,8 @@ if (bus.is_connected()) {
     }
     
     function runPreferences(){
-    //code for running preferences windows will be here
-    print("Preferences not implemented");
+        //code for running preferences windows will be here
+        prefwindow.runpref();
     }
     /* =========================================================================== */
     /* =========================================================================== */
@@ -278,7 +362,7 @@ if (bus.is_connected()) {
         component = new IBus.Component({
             name: "org.freedesktop.IBus.Avro",
             description: "Avro Phonetic",
-            version: "0.9",
+            version: "1.0",
             license: "MPL 1.1",
             author: "Sarim Khan <sarim2005@gmail.com>",
             homepage: "https://github.com/sarim/ibus-avro",
@@ -289,7 +373,7 @@ if (bus.is_connected()) {
         component = new IBus.Component({
             name: "org.freedesktop.IBus.Avro",
             description: "Avro Phonetic",
-            version: "0.9",
+            version: "1.0",
             license: "MPL 1.1",
             author: "Sarim Khan <sarim2005@gmail.com>",
             homepage: "https://github.com/sarim/ibus-avro",
@@ -297,19 +381,36 @@ if (bus.is_connected()) {
             textdomain: "avro-phonetic"
         });
     }
-
-    var avroenginedesc = new IBus.EngineDesc({
-        name: "avro-phonetic",
-        longname: "Avro Phonetic",
-        description: "Avro Phonetic Engine",
-        language: "bn",
-        license: "MPL 1.1",
-        author: "Sarim Khan <sarim2005@gmail.com>",
-        icon: eevars.get_pkgdatadir() + "/avro-bangla.png",
-        layout: "bn"
-    });
+    
+    //opensuse's ibus supports only Property(Menu) but ubuntu only supports "setup" param for Preferences Button, try-catch in rescue
+    try {
+        var avroenginedesc = new IBus.EngineDesc({
+            name: "avro-phonetic",
+            longname: "Avro Phonetic",
+            description: "Avro Phonetic Engine",
+            language: "bn",
+            license: "MPL 1.1",
+            author: "Sarim Khan <sarim2005@gmail.com>",
+            icon: eevars.get_pkgdatadir() + "/avro-bangla.png",
+            layout: "bn",
+            setup: "/usr/bin/env gjs --include-path=" + eevars.get_pkgdatadir() + " " + eevars.get_pkgdatadir() + "/pref.js --standalone"
+        });
+    } catch (error) {
+        var avroenginedesc = new IBus.EngineDesc({
+            name: "avro-phonetic",
+            longname: "Avro Phonetic",
+            description: "Avro Phonetic Engine",
+            language: "bn",
+            license: "MPL 1.1",
+            author: "Sarim Khan <sarim2005@gmail.com>",
+            icon: eevars.get_pkgdatadir() + "/avro-bangla.png",
+            layout: "bn"
+        });
+    
+    }
 
     component.add_engine(avroenginedesc);
+    
     if (exec_by_ibus) {
         bus.request_name("org.freedesktop.IBus.Avro", 0);
     } else {

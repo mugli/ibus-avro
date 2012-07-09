@@ -28,7 +28,6 @@
 const gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
 
-imports.searchPath.unshift('.');
 const dictsearch = imports.dbsearch;
 const autocorrectdb = imports.autocorrect.db;
 const Avroparser = imports.avrolib.OmicronLab.Avro.Phonetic;
@@ -47,6 +46,16 @@ SuggestionBuilder.prototype = {
         this._candidateSelections = {};
         this._phoneticCache = {};
         this._loadCandidateSelectionsFromFile();
+        this._tempCache = {};
+        this._pref = this._defaultPref();
+    },
+    
+    
+    _defaultPref: function(){
+        var pref = {};
+        pref.dictEnable = true;
+        
+        return pref;
     },
     
     
@@ -173,9 +182,19 @@ SuggestionBuilder.prototype = {
     },    
     
     
+    _addToTempCache: function(full, base, eng){
+        //Don't overwrite
+        if (!this._tempCache[full]){
+            this._tempCache[full] = {};
+            this._tempCache[full].base = base;
+            this._tempCache[full].eng = eng;
+        }
+    },
+    
+    
     _addSuffix: function(splitWord){
         var tempList = [];
-        
+        var fullWord = '';
         var word = splitWord['middle'].toLowerCase();
         var len = word.length;
         
@@ -183,6 +202,8 @@ SuggestionBuilder.prototype = {
         if (this._phoneticCache[word]){
            rList = this._phoneticCache[word].slice(0);
         }
+        
+        this._tempCache = {};
         
         if (len >= 2){
             for (var j = 1; j <= len; j++){
@@ -197,14 +218,21 @@ SuggestionBuilder.prototype = {
                             var cacheRightChar = cacheItem.substr(-1);
                             var suffixLeftChar = suffix.substr(0, 1);
                             if (this._isVowel(cacheRightChar) && this._isKar(suffixLeftChar)){
-                                tempList.push(cacheItem + "\u09df" + suffix); // \u09df = B_Y
+                                fullWord = cacheItem + "\u09df" + suffix; // \u09df = B_Y
+                                tempList.push(fullWord);
+                                this._addToTempCache(fullWord, cacheItem, key);
                             } else {
                                 if (cacheRightChar == "\u09ce"){ // \u09ce = b_Khandatta
-                                    tempList.push(cacheItem.substr(0, cacheItem.length - 1) + "\u09a4" + suffix); // \u09a4 = b_T
+                                    fullWord = cacheItem.substr(0, cacheItem.length - 1) + "\u09a4" + suffix; // \u09a4 = b_T
+                                    tempList.push(fullWord);
+                                    this._addToTempCache(fullWord, cacheItem, key);
                                 } else if (cacheRightChar == "\u0982"){ // \u0982 = b_Anushar
-                                    tempList.push(cacheItem.substr(0, cacheItem.length - 1) + "\u0999" + suffix); // \u09a4 = b_NGA
+                                    fullWord = cacheItem.substr(0, cacheItem.length - 1) + "\u0999" + suffix; // \u09a4 = b_NGA
+                                    tempList.push(fullWord);
                                 } else {
-                                    tempList.push(cacheItem + suffix);
+                                    fullWord = cacheItem + suffix;
+                                    tempList.push(fullWord);
+                                    this._addToTempCache(fullWord, cacheItem, key);
                                 }
                             }
                         }
@@ -224,52 +252,63 @@ SuggestionBuilder.prototype = {
     _joinSuggestion: function(autoCorrect, dictSuggestion, phonetic, splitWord){
         var words = [];
         
-        /* 1st Item: Autocorrect */
-        if (autoCorrect['corrected']){
-            words.push(autoCorrect['corrected']);
-            //Add autocorrect entry to dictSuggestion for suffix support
-            if (!autoCorrect['exact']){
-                dictSuggestion.push(autoCorrect['corrected']);
-            }
-        }
-        
-        
-        /* 2rd Item: Dictionary Avro Phonetic */
-        //Update Phonetic Cache
-        if(!this._phoneticCache[splitWord['middle'].toLowerCase()]){
-            if (dictSuggestion.length > 0){
-                this._phoneticCache[splitWord['middle'].toLowerCase()] = dictSuggestion.slice(0);
-            }
-        }
-        //Add Suffix
-        var dictSuggestionWithSuffix = this._addSuffix(splitWord);
+        if (!this._pref.dictEnable){
+                words.push(phonetic);
+                words[0] = splitWord['begin'] + words[0] + splitWord['end'];
+            
+                var suggestion = {};
+                suggestion['words'] = words;
+                suggestion['prevSelection'] = 0;
+        } else {
 
-        var sortedWords = this._sortByPhoneticRelevance(phonetic, dictSuggestionWithSuffix);
-        for (i in sortedWords){
-            this._addToArray(words, sortedWords[i]);
-        }
-        
-        /* 3rd Item: Classic Avro Phonetic */
-        this._addToArray(words, phonetic);
-        
-        var suggestion = {};
-        
-        //Is there any previous custom selection of the user?
-        suggestion['prevSelection'] = this._getPreviousSelection(splitWord, words);
-        
-        //Add padding to all, except exact autocorrect
-        for (i in words){
-            if (autoCorrect['exact']){
-                if (autoCorrect['corrected'] != words[i]){
-                    words[i] = splitWord['begin'] + words[i] + splitWord['end'];
+                /* 1st Item: Autocorrect */
+                if (autoCorrect['corrected']){
+                    words.push(autoCorrect['corrected']);
+                    //Add autocorrect entry to dictSuggestion for suffix support
+                    if (!autoCorrect['exact']){
+                        dictSuggestion.push(autoCorrect['corrected']);
+                    }
                 }
-            } else {
-                words[i] = splitWord['begin'] + words[i] + splitWord['end'];   
-            }
+        
+        
+                /* 2rd Item: Dictionary Avro Phonetic */
+                //Update Phonetic Cache
+                if(!this._phoneticCache[splitWord['middle'].toLowerCase()]){
+                    if (dictSuggestion.length > 0){
+                        this._phoneticCache[splitWord['middle'].toLowerCase()] = dictSuggestion.slice(0);
+                    }
+                }
+                //Add Suffix
+                var dictSuggestionWithSuffix = this._addSuffix(splitWord);
+
+                var sortedWords = this._sortByPhoneticRelevance(phonetic, dictSuggestionWithSuffix);
+                for (i in sortedWords){
+                    this._addToArray(words, sortedWords[i]);
+                }
+        
+                /* 3rd Item: Classic Avro Phonetic */
+                this._addToArray(words, phonetic);
+        
+                var suggestion = {};
+        
+                //Is there any previous custom selection of the user?
+                suggestion['prevSelection'] = this._getPreviousSelection(splitWord, words);
+        
+                //Add padding to all, except exact autocorrect
+                for (i in words){
+                    if (autoCorrect['exact']){
+                        if (autoCorrect['corrected'] != words[i]){
+                            words[i] = splitWord['begin'] + words[i] + splitWord['end'];
+                        }
+                    } else {
+                        words[i] = splitWord['begin'] + words[i] + splitWord['end'];   
+                    }
+                }
+        
+                suggestion['words'] = words;
+        
         }
-        
-        suggestion['words'] = words;
-        
+    
         return suggestion;
     },
     
@@ -332,20 +371,30 @@ SuggestionBuilder.prototype = {
             var file = gio.File.new_for_path(GLib.get_home_dir() + "/.candidate-selections.json");
         
             if (file.query_exists (null)) {
+                /*
                 var file_stream = file.read(null);
                 var data_stream = gio.DataInputStream.new(file_stream);
-                var json = '';
-                
-                json = data_stream.read_until("", null);
-                //print(json);
+                var json = data_stream.read_until("", null);
                 this._candidateSelections = JSON.parse(json[0]);
-                
+                */
+                file.read_async(0, null,
+                		function(source, result){
+                		    var file_stream = source.read_finish(result);
+                		    
+                		    if (file_stream){
+                		        var data_stream = gio.DataInputStream.new(file_stream);
+                                var json = data_stream.read_until("", null);
+                                this._candidateSelections = JSON.parse(json[0]);
+                		    } else {
+                		        this._logger(e, 'Error in _loadCandidateSelectionsFromFile');
+                		    }
+                		});
             } else {
                 this._candidateSelections = {};
             }
         } catch (e){
            this._candidateSelections = {};
-           this._logger(e, '_loadCandidateSelectionsFromFile Error');
+           this._logger(e, 'Error in _loadCandidateSelectionsFromFile');
         }
     },
     
@@ -353,18 +402,35 @@ SuggestionBuilder.prototype = {
     _saveCandidateSelectionsToFile: function(){
         try {
             var file = gio.File.new_for_path ( GLib.get_home_dir() + "/.candidate-selections.json");
-                if (file.query_exists (null)) {
-                    file.delete (null);
-                }
-                // Create a new file with this name
-                var file_stream = file.create (gio.FileCreateFlags.NONE, null);
+            
+            if (file.query_exists (null)) {
+                file.delete (null);
+            }
+            /*
+            var file_stream = file.create (gio.FileCreateFlags.NONE, null);
+            var json = JSON.stringify(this._candidateSelections);
+            json = this._convertToUnicodeValue(json);
+            // Write text data to file
+            var data_stream =  gio.DataOutputStream.new (file_stream);
+            data_stream.put_string (json, null);
+            */
+            var that = this;
+            // Create a new file with this name
+            file.create_async(gio.FileCreateFlags.NONE, 0, null, 
+                    function(source, result){
+                        var file_stream = source.create_finish(result);
+                        
+                        if (file_stream){
+                            var json = JSON.stringify(that._candidateSelections);
+                            json = that._convertToUnicodeValue(json);
 
-                var json = JSON.stringify(this._candidateSelections);
-                json = this._convertToUnicodeValue(json);
-
-                // Write text data to file
-                var data_stream =  gio.DataOutputStream.new (file_stream);
-                data_stream.put_string (json, null);
+                            // Write text data to file
+                            var data_stream =  gio.DataOutputStream.new (file_stream);
+                            data_stream.put_string (json, null);
+                        } else {
+                            this._logger(e, 'Error in _saveCandidateSelectionsToFile');
+                        }
+                    });
         } catch (e) {
            this._logger(e, '_saveCandidateSelectionsToFile Error');
        }
@@ -373,20 +439,56 @@ SuggestionBuilder.prototype = {
 
     _updateCandidateSelection: function(word, candidate){
         this._candidateSelections[word] = candidate;
+    },
+    
+    
+    
+    _logger: function (obj, msg){
+    	print ((msg || 'Log') + ': ' + JSON.stringify(obj, null, '\t'));
+    },
+    
+    
+    getPref: function(){
+        return this._pref;
+    },
+    
+    
+    setPref: function(pref){
+        //TODO: Add Validation
+        this._pref = pref;
+    },
+    
+    
+    stringCommitted: function(word, candidate){
+        if (!this._pref.dictEnable){
+            return;
+        }
+        
+        //If it is called, user made the final decision here
+        
+        //Check and save selection without suffix if that is not present
+        if (this._tempCache[candidate]){
+            var base = this._tempCache[candidate].base;
+            var eng = this._tempCache[candidate].eng;
+            //Don't overwrite existing value
+            if (!this._candidateSelections[eng]){
+                this._candidateSelections[eng] = base;
+                this._saveCandidateSelectionsToFile();
+            }
+        }
         
         this._saveCandidateSelectionsToFile();
     },
     
     
     updateCandidateSelection: function(word, candidate){
+        if (!this._pref.dictEnable){
+            return;
+        }
+        
         //Seperate begining and trailing padding characters, punctuations etc. from whole word
         var splitWord = this._separatePadding(word);
         this._updateCandidateSelection(splitWord['middle'], candidate);
-    },
-    
-    
-    _logger: function (obj, msg){
-    	print ((msg || 'Log') + ': ' + JSON.stringify(obj, null, '\t'));
     },
     
     
@@ -400,8 +502,11 @@ SuggestionBuilder.prototype = {
         
         //Convert the word to Bangla using 3 separate methods 
         var phonetic = this._getClassicPhonetic(splitWord['middle']);
-        var dictSuggestion = this._getDictionarySuggestion(splitWord);
-        var autoCorrect = this._getAutocorrect(word, splitWord);
+        
+        if (this._pref.dictEnable){
+            var dictSuggestion = this._getDictionarySuggestion(splitWord);
+            var autoCorrect = this._getAutocorrect(word, splitWord);
+        }
 
         //Prepare suggestion object
         var suggestion = this._joinSuggestion(autoCorrect, dictSuggestion, phonetic, splitWord);
